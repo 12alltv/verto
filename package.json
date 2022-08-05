@@ -18,5 +18,10 @@
   "homepage": "https://github.com/12alltv/verto#readme",
   "devDependencies": {
     "typescript": "^4.7.4"
+  },
+  "dependencies": {
+    "axios": "^0.27.2",
+    "cordova-plugin-advanced-websocket-types": "^0.0.5",
+    "nanoid": "3"
   }
 }

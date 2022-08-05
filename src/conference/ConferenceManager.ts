@@ -1,9 +1,9 @@
 import VertoSubscription from '../VertoSubscription';
-import {OutgoingMessage} from '../../models/OutgoingMessage';
+import {OutgoingMessage} from '../models/OutgoingMessage';
+import {ChatMethod} from '../enums';
 import VertoNotification from '../VertoNotification';
-import {IncomingMessage} from '../../models/IncomingMessage';
-import {SwitchHost} from '../../models/SwitchHost';
-import {ChatMethod} from '../../shared/enums';
+import {IncomingMessage} from '../models/IncomingMessage';
+import {SwitchHost} from '../models/SwitchHost';
 
 type SubscriptionType = 'mod' | 'chat' | 'info';
 
@@ -27,7 +27,6 @@ export default class ConferenceManager {
   private readonly vertoSubscription: VertoSubscription;
   private readonly vertoNotification: VertoNotification;
   private readonly callId: string;
-  private mod: string | null = null;
 
   constructor(vertoSubscription: VertoSubscription, vertoNotification: VertoNotification, channels: Channels, callId: string) {
     this.vertoSubscription = vertoSubscription;
@@ -36,11 +35,10 @@ export default class ConferenceManager {
 
     this.subscriptions = {
       chat: {channel: channels.chat, handler: this.handleChatEvent.bind(this)},
-      info: {channel: channels.info, handler: this.handleInfoEvent.bind(this)},
+      info: {channel: channels.info, handler: this.handleInfoEvent.bind(this)}
     };
 
     if (channels.mod) {
-      this.mod = channels.mod;
       this.subscriptions.mod = {
         channel: channels.mod,
         handler: this.handleModEvent.bind(this)
@@ -58,8 +56,15 @@ export default class ConferenceManager {
     });
   }
 
-  get moderator() {
-    return this.mod;
+  setModeratorChannel(token: string) {
+    this.subscriptions.mod = {
+      channel: token,
+      handler: this.handleModEvent.bind(this)
+    };
+  }
+
+  removeModeratorChannel() {
+    this.subscriptions.mod = undefined;
   }
 
   handleChatEvent({data}: any) {
@@ -87,6 +92,7 @@ export default class ConferenceManager {
             this.vertoNotification.onChatMessageOneToOne.notify(im);
           }
           break;
+        case ChatMethod.SwitchHost:
         case ChatMethod.SwitchHostStream:
           if (this.callId === to) {
             let username = '';
@@ -104,10 +110,15 @@ export default class ConferenceManager {
               console.error('No moderator data');
             }
 
+            this.vertoNotification.onChatMessageSwitchHost.notify(new SwitchHost(username, password));
             this.vertoNotification.onChatMessageSwitchHostStream.notify(new SwitchHost(username, password));
           }
           break;
-
+        case ChatMethod.SwitchHostCamera:
+          if (this.callId === to) {
+            this.vertoNotification.onChatMessageSwitchHostCamera.notify(null);
+          }
+          break;
         case ChatMethod.ChangeParticipantState:
           if (message) {
             try {
@@ -118,7 +129,6 @@ export default class ConferenceManager {
             }
           }
           break;
-
         case ChatMethod.StreamChange:
           if (this.callId !== from && message) {
             try {
@@ -129,9 +139,29 @@ export default class ConferenceManager {
             }
           }
           break;
-        case ChatMethod.HostLeft:
-          if (this.callId !== from) {
-            this.vertoNotification.onHostLeft.notify(null);
+        case ChatMethod.MakeCoHost:
+          const callIds = to.split(',');
+          if (callIds.indexOf(this.callId) !== -1 && message) {
+            try {
+              const m = JSON.parse(message);
+              m.callIds = callIds;
+              this.vertoNotification.onMakeCoHost.notify(m);
+            } catch (e) {
+              console.error('Cannot parse MakeCoHost message');
+            }
+          }
+          break;
+        case ChatMethod.RemoveCoHost:
+          if (message) {
+            try {
+              const m = JSON.parse(message);
+              m.me = this.callId === to;
+              if (m.me || m.coHostCallIds.indexOf(this.callId)) {
+                this.vertoNotification.onRemoveCoHost.notify(m);
+              }
+            } catch (e) {
+              console.error('Cannot parse RemoveCoHost message');
+            }
           }
           break;
         case ChatMethod.RemoveParticipant:
@@ -139,15 +169,32 @@ export default class ConferenceManager {
             this.vertoNotification.onYouHaveBeenRemoved.notify(null);
           }
           break;
+        case ChatMethod.HostLeft:
+          this.vertoNotification.onHostLeft.notify(null);
+          break;
+        case ChatMethod.StopMediaShare:
+          if (this.callId !== to) {
+            this.vertoNotification.onStopMediaShare.notify(null);
+          }
+          break;
+        case ChatMethod.StopAllMediaShare:
+          if (this.callId !== from) {
+            this.vertoNotification.onStopAllMediaShare.notify(null);
+          }
+          break;
         case ChatMethod.BlockParticipant:
           if (this.callId === to) {
             this.vertoNotification.onYouHaveBeenBlocked.notify(null);
           }
           break;
+        case ChatMethod.YouAreHost:
+          if (this.callId === to) {
+            this.vertoNotification.onYouAreHost.notify(null);
+          }
+          break;
       }
     } catch (e) {
       console.error('Invalid message');
-      // this.vertoNotification.onChatMessageToAll.notify(new IncomingMessage('', data.fromDisplay, data.message, false));
     }
   }
 
@@ -169,7 +216,7 @@ export default class ConferenceManager {
       message?: string;
       action?: string;
       type?: string;
-    },
+    }
   ) {
     if (!eventChannel) {
       return;
@@ -189,7 +236,7 @@ export default class ConferenceManager {
   broadcastModeratorCommand(
     command: string,
     memberId: string | null,
-    argument?: string | any[],
+    argument?: string | any[]
   ) {
     if (!this.subscriptions.mod) {
       console.error('No moderator rights');
@@ -205,7 +252,7 @@ export default class ConferenceManager {
       command,
       id,
       value: argument,
-      application: 'conf-control',
+      application: 'conf-control'
     });
   }
 
@@ -255,7 +302,7 @@ export default class ConferenceManager {
     };
 
     const parameterizedBroadcasterFor = (command: string) => (
-      argument?: string | any[],
+      argument?: string | any[]
     ) => {
       this.broadcastModeratorCommand(command, memberId, argument);
     };
@@ -288,7 +335,7 @@ export default class ConferenceManager {
       toDecreaseVolumeOutput: constantBroadcasterFor('volume_out')('down'),
       toIncreaseVolumeInput: constantBroadcasterFor('volume_in')('up'),
       toDecreaseVolumeInput: constantBroadcasterFor('volume_in')('down'),
-      toTransferTo: parameterizedBroadcasterFor('transfer'),
+      toTransferTo: parameterizedBroadcasterFor('transfer')
     };
   }
 }

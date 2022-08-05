@@ -1,6 +1,6 @@
 import VertoSubscription from '../VertoSubscription';
 import VertoNotification from '../VertoNotification';
-import Participant, {ParticipantParams} from '../../models/Participant';
+import Participant, {ParticipantParams} from '../models/Participant';
 
 export default class ConferenceLiveArray {
   private readonly vertoSubscription: VertoSubscription;
@@ -11,6 +11,7 @@ export default class ConferenceLiveArray {
   private lastSerialNumber: number;
   private orderedCallIds: any[];
   private serialNumberErrors: number;
+  private secondaryCallId: string | null = null;
   private readonly callId: string;
 
   constructor(
@@ -36,10 +37,14 @@ export default class ConferenceLiveArray {
     this.bootstrap();
   }
 
+  setSecondaryCallId(callId: string) {
+    this.secondaryCallId = callId;
+  }
+
   insertValue(
     callId: string | number,
     value: any,
-    insertAt?: number | undefined,
+    insertAt?: number | undefined
   ) {
     if (this.hashTable[callId]) {
       return;
@@ -64,7 +69,7 @@ export default class ConferenceLiveArray {
 
         return [...accumulator, currentCallId];
       },
-      [],
+      []
     );
   }
 
@@ -74,7 +79,7 @@ export default class ConferenceLiveArray {
     }
 
     this.orderedCallIds = this.orderedCallIds.filter(
-      (existingCallId) => existingCallId !== callId,
+      (existingCallId) => existingCallId !== callId
     );
     delete this.hashTable[callId];
     return true;
@@ -176,7 +181,7 @@ export default class ConferenceLiveArray {
       name,
       data: payload,
       hashKey: callId,
-      action,
+      action
     } = event.data;
 
     if (name !== this.conferenceName) {
@@ -211,14 +216,14 @@ export default class ConferenceLiveArray {
       liveArray: {
         command: 'bootstrap',
         context: this.liveArrayChannel,
-        name: this.conferenceName,
-      },
+        name: this.conferenceName
+      }
     });
   }
 
   private parseParticipant(value: string, callId: string) {
     const {audio, video} = JSON.parse(value[4]);
-    const me = this.callId === callId;
+    const me = this.callId === callId || this.secondaryCallId === callId;
     const participantId = value[0];
     const user = value[2];
     const pAudio = {
@@ -226,14 +231,23 @@ export default class ConferenceLiveArray {
       talking: audio.talking
     };
     let pVideo = {
-      muted: true
+      muted: true,
+      floor: video.floor
     };
     if (video.mediaFlow === 'sendRecv') {
-      pVideo = {
-        muted: video.muted
-      };
+      pVideo.muted = video.muted;
     }
-    const {showMe, isHost, channelName, displayName, isHostSharedVideo, isMobileApp, isVlrConnection, isIos}: any = value[5];
+    const {
+      showMe,
+      isHost,
+      channelName,
+      displayName,
+      isHostSharedVideo,
+      isMobileApp,
+      isVlrConnection,
+      isPrimaryCall,
+      userId
+    }: any = value[5];
 
     const params: ParticipantParams = {
       callId,
@@ -249,7 +263,8 @@ export default class ConferenceLiveArray {
       isHostSharedVideo: isHostSharedVideo === 'true',
       isMobileApp: isMobileApp === 'true',
       isVlrConnection: isVlrConnection === 'true',
-      isIos: isIos === 'true'
+      isPrimaryCall: isPrimaryCall !== undefined ? isPrimaryCall === 'true' : undefined,
+      userId: userId ? +userId : undefined
     };
 
     return new Participant(params);

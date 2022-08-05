@@ -1,5 +1,5 @@
-import {IceServer} from '../../shared/types';
-import {IceServerService} from '../../services';
+import {IceServer} from '../types';
+import {RestService} from '../services';
 
 type Options = {
   stream: MediaStream;
@@ -35,7 +35,7 @@ export default class FSRTCPeerConnection {
 
     if (!iceServers) {
       try {
-        const {data} = await IceServerService.getIceServers();
+        const {data} = await RestService.getIceServers();
         iceServers = data;
       } catch (e) {
       }
@@ -58,7 +58,7 @@ export default class FSRTCPeerConnection {
     }
 
     let addedTracks = 0;
-    let iceCandidateTimeout: NodeJS.Timeout;
+    let iceCandidateTimeout: number;
     const handleIceCandidateDone = () => {
       this.pc?.removeEventListener('icecandidate', listeners.icecandidate);
       this.pc?.localDescription && onIceSdp(this.pc.localDescription);
@@ -118,7 +118,7 @@ export default class FSRTCPeerConnection {
       if (sender) {
         sender
           .replaceTrack(track)
-          .catch(err => console.error(err));
+          .catch((err: any) => console.error(err));
       }
     });
   }

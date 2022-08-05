@@ -17,19 +17,26 @@ export type Session = {
 
 export type VertoSessionParams = {
   callerName: string;
-  destinationNumber: string;
+  apiUrl: string;
+  platforms: Platform[];
+  changeLayout?: boolean;
+  isIos: boolean;
+  isVlrConnection?: boolean;
+  realNumber: string;
+  streamNumber?: string;
   localStream: MediaStream;
   secondary?: boolean;
-  changeLayout?: boolean;
-  displayName: string;
+  giveFloor?: boolean;
+  displayName?: string;
   channelName?: string;
   moderatorUsername?: string;
   moderatorPassword?: string;
-  fsUrl: string;
+  fsUrl?: string;
   isHost?: boolean;
   isHostSharedVideo?: boolean;
   notifyOnStateChange?: boolean;
-  isVlrConnection?: boolean;
+  receivePrimaryCallStream?: boolean;
+  userId?: number;
 };
 
 export type VertoCallParams = {
@@ -41,13 +48,15 @@ export type VertoCallParams = {
   notification: VertoNotification;
   showMe: boolean;
   displayName: string;
-  isHostSharedVideo?: boolean;
   receiveStream: boolean;
+  isPrimaryCall?: boolean;
   isHost?: boolean;
+  isHostSharedVideo?: boolean;
   channelName?: string;
-  isVlrConnection?: boolean;
-  onDestroy: () => void;
-  onRTCStateChange: () => void;
+  userId?: number;
+  onDestroy?: () => void;
+  onRTCStateChange?: () => void;
+  onReceiveStream?: (stream: MediaStream) => void;
 };
 
 export enum VertoLayout {
@@ -61,3 +70,26 @@ export type StreamSnapshot = {
   id: number;
   snapshot: string;
 };
+
+export type IceServer = {
+  urls: string | string[];
+  username?: string;
+  password?: string;
+};
+
+export type SendWsRequest = {
+  method: string,
+  params: any,
+  onSuccess: (data: any) => void,
+  onError: (err?: any) => void
+};
+
+export type RoomLayout = {
+  id: number;
+  name: string;
+  layout: VertoLayout;
+  key: string;
+  default: boolean;
+};
+
+export type Platform = "ios" | "ipad" | "iphone" | "android" | "phablet" | "tablet" | "cordova" | "capacitor" | "electron" | "pwa" | "mobile" | "mobileweb" | "desktop" | "hybrid";

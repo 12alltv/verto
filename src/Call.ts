@@ -1,7 +1,6 @@
 import VertoRTC from './webrtc/VertoRTC';
 import {ENUM} from './utils';
 import {VertoCallParams} from './types';
-import {isPlatform} from '@ionic/react';
 
 interface CallParams extends VertoCallParams {
   remote_caller_id_name: string;
@@ -28,7 +27,16 @@ export default class Call {
   private rtc?: VertoRTC;
 
   constructor(params: VertoCallParams) {
-    const {destination_number, showMe, isHost, isHostSharedVideo, channelName, displayName, isVlrConnection} = params;
+    const {
+      destination_number,
+      showMe,
+      isHost,
+      isHostSharedVideo,
+      channelName,
+      displayName,
+      isPrimaryCall,
+      userId
+    } = params;
 
     this.params = {
       remote_caller_id_name: 'OUTBOUND CALL',
@@ -41,9 +49,8 @@ export default class Call {
         isHostSharedVideo,
         channelName,
         displayName,
-        isMobileApp: true,
-        isVlrConnection,
-        isIos: isPlatform('ios')
+        isPrimaryCall: isPrimaryCall || false,
+        userId: `${userId}`
       },
       ...params
     };
@@ -59,7 +66,7 @@ export default class Call {
 
   bootstrapRealtimeConnection() {
     const callbacks = {
-      onICESDP: () => {
+      onIceSdp: () => {
         if (!this.rtc) {
           throw new Error('RTC is not initialized');
         }
@@ -76,12 +83,18 @@ export default class Call {
         // Check if H264 is supported
         const h264Codec = sdp.match(/a=rtpmap:(\d+) H264/);
 
-        // If H264 is supported remove all other codecs
+        // If H264 is supported remove all others codec
         if (h264Codec && h264Codec.length > 1) {
           const sdpSplit = sdp.split('\n');
 
           for (let i = 0; i < sdpSplit.length; i++) {
             const line = sdpSplit[i];
+            // const fmtp = line.match(/^a=fmtp:(\d+)/);
+            // if (fmtp) {
+            //   sdpSplit[i] = sdpSplit[i] + `\na=fmtp:${fmtp[1]} max-fr=30;max-recv-width=320;max-recv-height=180`;
+            //   continue;
+            // }
+
             const videoMatch = line.match(/^(m=video \d+ [^ ]+ )/g);
             if (videoMatch) {
               sdpSplit[i] = `${videoMatch[0]}${h264Codec[1]}`;
@@ -116,7 +129,7 @@ export default class Call {
       },
     };
 
-    const {localStream, notification, receiveStream, notifyOnStateChange, onRTCStateChange} = this.params;
+    const {localStream, notification, receiveStream, notifyOnStateChange, onRTCStateChange, onReceiveStream} = this.params;
 
     this.rtc = new VertoRTC({
       callbacks,
@@ -124,7 +137,8 @@ export default class Call {
       notifyOnStateChange,
       notification,
       receiveStream,
-      onStateChange: onRTCStateChange
+      onStateChange: onRTCStateChange,
+      onReceiveStream
     });
 
     this.rtc.inviteRemotePeerConnection();
@@ -216,7 +230,7 @@ export default class Call {
       case ENUM.state.destroy:
         this.rtc?.stop();
         this.params.notification.onDestroy.notify(null);
-        this.params.onDestroy();
+        this.params.onDestroy && this.params.onDestroy();
         break;
 
       case ENUM.state.early:
@@ -229,10 +243,15 @@ export default class Call {
     return true;
   }
 
+  stopRtc() {
+    this.broadcastMethod('verto.bye', {});
+    this.rtc?.stop();
+  }
+
   handleMethodResponse(
     method: string,
     success: boolean,
-    response: { holdState: string },
+    response: any
   ) {
     switch (method) {
       case 'verto.answer':
@@ -254,7 +273,12 @@ export default class Call {
 
       case 'verto.bye':
         this.hangup();
-        this.params.notification.onUserHangup.notify(null);
+        if (success) {
+          this.params.notification.onUserHangup.notify(null);
+        } else {
+          console.error(`Method ${method}`, response);
+          this.params.notification.onHangupError.notify({errorMessage: response.message});
+        }
         break;
 
       case 'verto.modify':
@@ -465,10 +489,6 @@ export default class Call {
 
   replaceTracks(stream: MediaStream) {
     this.rtc?.replaceTracks(stream);
-  }
-
-  stopPrimaryVideoTrack() {
-    this.rtc?.stopPrimaryVideoTrack();
   }
 
   toString() {

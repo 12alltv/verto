@@ -9,11 +9,11 @@ import ConferenceLiveArray from './conference/ConferenceLiveArray';
 import VertoNotification from './VertoNotification';
 import VertoSubscription from './VertoSubscription';
 import VertoWebSocket from './VertoWebSocket';
-import {OutgoingMessage, OutgoingMessageTo} from '../models/OutgoingMessage';
-import Participant from '../models/Participant';
-import {WEBSOCKET_PASSWORD} from '../shared/constants';
-import {RoomLayoutService} from '../services';
-import {ChatMethod} from '../shared/enums';
+import {ChatMethod} from './enums';
+import {OutgoingMessage, OutgoingMessageTo} from './models/OutgoingMessage';
+import Participant from './models/Participant';
+import {RestService} from './services';
+import BaseService from "./services/BaseService";
 
 type SocketMessage = { method: any; params: any };
 type RPCMessage = {
@@ -30,48 +30,73 @@ type Conf = {
   liveArray: ConferenceLiveArray;
 };
 
+type Connection = {
+  id: string;
+  call: Call;
+};
+
+type SecondaryCallParams = {
+  stream: MediaStream,
+  channelName: string,
+  receiveStream: boolean
+};
+
 export default class VertoSession {
-  private readonly sessId: string = generateNanoId();
+  private sessId: string = generateNanoId();
   private readonly sessionParams: VertoSessionParams;
-  private readonly callerDisplayName: string = '';
+
   private sessions: Session = {};
-  private primarySession: { id: string; call: Call | null; conf: Conf | null } = {
+  private primaryConnection: { id: string; call: Call | null; conf: Conf | null } = {
     id: generateNanoId(),
     call: null,
     conf: null
   };
-  private secondarySession: { id: string; call: Call | null } = {
+  private secondaryConnection: { id: string; call: Call | null } = {
     id: generateNanoId(),
     call: null
   };
+  private connections: Connection[] = [];
   private vertoNotification = new VertoNotification();
   private vertoSubscription = new VertoSubscription(this.vertoNotification);
   private vertoWebSocket: VertoWebSocket;
-  private isSharingVideo = false;
+  private modToken: string | null = null;
   private defaultLayout: VertoLayout | null = null;
+  private caller = '';
 
   constructor(params: VertoSessionParams) {
+    BaseService.apiUrl = params.apiUrl;
     this.sessionParams = params;
     const loginUrl = params.fsUrl.replace('wss://', '').replace('/', '');
     this.vertoWebSocket = new VertoWebSocket(
       this.sessId,
       this.vertoNotification,
       this.sessionParams.moderatorUsername || `1008@${loginUrl}`,
-      this.sessionParams.moderatorPassword || WEBSOCKET_PASSWORD,
-      this.sessionParams.fsUrl
+      this.sessionParams.moderatorPassword,
+      this.sessionParams.fsUrl,
+      params.platforms
     );
-    this.vertoNotification.onFreeswitchLogin.subscribe(() => {
-      this.primaryCall();
+    this.vertoNotification.onFSLogged.subscribe(() => {
+      if (params.secondary && params.channelName) {
+        this.secondaryCall({
+          stream: params.localStream,
+          channelName: params.channelName,
+          receiveStream: true
+        });
+      } else {
+        this.primaryCall();
+      }
 
-      if (params.changeLayout) {
+      if (params.giveFloor) {
         this.vertoNotification.onBootstrappedParticipants.subscribe(
-          (data: Participant[]) => {
-            const id = this.primarySession.call?.getId();
+          (participants: Participant[]) => {
+            const id = this.secondaryConnection.call?.getId() || this.primaryConnection.call?.getId();
+
             if (id) {
-              const sharedSession = data.find(({callId}) => id === callId);
-              if (sharedSession && this.primarySession.conf) {
-                this.giveParticipantFloor(sharedSession.participantId);
-                // this.primary.conf.manager.changeVideoLayout('1up_top_left+9');
+              const sharedSession = participants.find(({callId}: Participant) => id === callId);
+              if (sharedSession && this.primaryConnection.conf) {
+                this.primaryConnection.conf.manager
+                  .moderateMemberById(sharedSession.participantId)
+                  .toBeVideoFloor();
               }
             }
           }
@@ -92,8 +117,6 @@ export default class VertoSession {
         };
       }
     );
-
-    this.callerDisplayName = params.displayName || `User_${new Date().getUTCMilliseconds()}`;
   }
 
   get notification() {
@@ -101,26 +124,36 @@ export default class VertoSession {
   }
 
   get callerName() {
-    return this.callerDisplayName;
+    return this.caller;
+  }
+
+  disconnectWebSocket() {
+    this.vertoWebSocket.disconnect();
+  }
+
+  reconnectWebSocket() {
+    this.vertoWebSocket.reconnect();
   }
 
   giveParticipantFloor(participantId: string) {
-    this.primarySession.conf?.manager
-      .moderateMemberById(participantId)
-      .toBeVideoFloor();
+    if (this.primaryConnection.conf) {
+      this.primaryConnection.conf.manager
+        .moderateMemberById(participantId)
+        .toBeVideoFloor();
+    }
   }
 
-  changeLayout(layout?: VertoLayout | null) {
+  changeLayout(layout?: VertoLayout) {
     if (layout) {
-      this.primarySession.conf?.manager.changeVideoLayout(layout);
+      this.primaryConnection.conf?.manager.changeVideoLayout(layout);
     } else {
       const getDefaultLayout = async () => {
         if (!this.defaultLayout) {
-          const {data} = await RoomLayoutService.getDefaultLayout();
+          const {data} = await RestService.getDefaultLayout();
           this.defaultLayout = data.layout;
         }
 
-        this.primarySession.conf?.manager.changeVideoLayout(this.defaultLayout);
+        this.primaryConnection.conf?.manager.changeVideoLayout(this.defaultLayout);
       };
 
       getDefaultLayout().catch();
@@ -129,86 +162,134 @@ export default class VertoSession {
 
   primaryCall() {
     const {
-      destinationNumber,
+      streamNumber,
       callerName,
       isHost,
       channelName,
       displayName,
+      realNumber,
+      localStream,
       isHostSharedVideo,
       notifyOnStateChange,
-      localStream,
-      isVlrConnection
+      receivePrimaryCallStream,
+      userId,
+      isIos
     } = this.sessionParams;
 
-    this.primarySession.call = new Call({
-      callID: this.primarySession.id,
-      destination_number: destinationNumber,
-      caller_id_name: callerName,
+    this.caller = callerName || `User_${new Date().getUTCMilliseconds()}`;
+
+    this.primaryConnection.call = new Call({
+      callID: this.primaryConnection.id,
+      destination_number: isHostSharedVideo ? (streamNumber as string) : realNumber,
+      caller_id_name: this.caller,
       localStream,
       notifyOnStateChange: notifyOnStateChange || false,
       notification: this.vertoNotification,
       showMe: true,
       isHost,
       channelName,
-      displayName: displayName || callerName,
-      receiveStream: true,
+      displayName: displayName || this.caller,
+      receiveStream: receivePrimaryCallStream === undefined ? true : receivePrimaryCallStream,
       isHostSharedVideo,
-      isVlrConnection,
+      isPrimaryCall: true,
+      userId,
+      isIos,
       onDestroy: () => this.notification.onPrimaryCallDestroy.notify(null),
-      onRTCStateChange: () => this.notification.onPrimaryCallRTCStateChange.notify(null)
+      onRTCStateChange: () => this.notification.onPrimaryCallRTCStateChange.notify(null),
+      onReceiveStream: (stream) => this.notification.onPrimaryCallReceiveStream.notify(stream)
     });
   }
 
-  secondaryCallStream(stream: MediaStream, streamName: string = 'Broadcast') {
-    this.isSharingVideo = true;
-    const {destinationNumber} = this.sessionParams;
-
-    this.secondarySession.call = new Call({
-      callID: this.secondarySession.id,
-      destination_number: `${destinationNumber}_stream`,
-      caller_id_name: streamName,
+  secondaryCall({stream, channelName, receiveStream}: SecondaryCallParams) {
+    const {streamNumber, userId, isIos} = this.sessionParams;
+    this.secondaryConnection.call = new Call({
+      callID: this.secondaryConnection.id,
+      destination_number: streamNumber as string,
+      caller_id_name: channelName,
       localStream: stream,
       notifyOnStateChange: false,
+      notification: this.vertoNotification,
+      showMe: false,
+      isHostSharedVideo: true,
+      displayName: channelName,
+      receiveStream,
+      isHost: false,
+      userId,
+      isIos,
+      onDestroy: () => this.notification.onSecondaryCallDestroy.notify(null),
+      onRTCStateChange: () => this.notification.onSecondaryCallRTCStateChange.notify(null),
+      onReceiveStream: (stream) => this.notification.onSecondaryCallReceiveStream.notify(stream)
+    });
+  }
+
+  secondaryCallStream(stream: MediaStream, streamName: string = 'Broadcast', mediaShare: boolean = false) {
+    const {streamNumber, userId} = this.sessionParams;
+    this.secondaryConnection.call = new Call({
+      callID: this.secondaryConnection.id,
+      destination_number: streamNumber as string,
+      caller_id_name: streamName,
+      localStream: stream,
+      notifyOnStateChange: mediaShare,
       notification: this.vertoNotification,
       showMe: false,
       displayName: streamName,
       receiveStream: false,
       isHost: true,
       isHostSharedVideo: true,
+      userId,
       onDestroy: () => this.notification.onSecondaryCallDestroy.notify(null),
-      onRTCStateChange: () => this.notification.onSecondaryCallRTCStateChange.notify(null)
+      onRTCStateChange: () => this.notification.onSecondaryCallRTCStateChange.notify(null),
+      onReceiveStream: (stream) => this.notification.onSecondaryCallReceiveStream.notify(stream)
     });
   }
 
+  addConnection(stream: MediaStream, caller: string) {
+    const id = generateNanoId();
+    this.connections.push({
+      id,
+      call: new Call({
+        callID: id,
+        destination_number: this.sessionParams.realNumber,
+        caller_id_name: caller,
+        localStream: stream,
+        notifyOnStateChange: true,
+        notification: this.vertoNotification,
+        showMe: true,
+        displayName: caller,
+        receiveStream: false
+      })
+    });
+  }
+
+  hasSecondaryCall() {
+    return !!this.secondaryConnection.call;
+  }
+
   hangupSecondaryCall() {
-    this.isSharingVideo = false;
-    this.secondarySession.call?.hangup();
+    this.secondaryConnection.call?.hangup();
   }
 
   hangupScreenShareCall() {
-    if (this.secondarySession.call) {
-      this.secondarySession.call.hangup();
-    } else if (this.primarySession.call) {
-      this.primarySession.call.hangup();
+    if (this.secondaryConnection.call) {
+      this.secondaryConnection.call.hangup();
+    } else if (this.primaryConnection.call) {
+      this.primaryConnection.call.hangup();
     }
   }
 
   hangup() {
     this.vertoNotification.onStartingHangup.notify(null);
-    this.secondarySession.call?.hangup();
-    this.primarySession.call?.hangup();
-  }
-
-  hasPrimaryCall() {
-    return !!this.primarySession.call;
+    this.connections.forEach(c => c.call.hangup());
+    this.secondaryConnection.call?.hangup();
+    this.primaryConnection.call?.hangup();
   }
 
   askToUnmuteParticipantMic(to: string) {
-    if (this.primarySession.call && this.primarySession.conf) {
-      this.primarySession.conf.manager.broadcastChatMessage(
+    if (this.primaryConnection.call && this.primaryConnection.conf) {
+      this.primaryConnection.conf.manager.broadcastChatMessage(
         new OutgoingMessage({
           method: ChatMethod.AskToUnmuteMic,
-          from: this.primarySession.call.getId(),
+          from: this.primaryConnection.call.getId(),
           to
         })
       );
@@ -216,17 +297,17 @@ export default class VertoSession {
   }
 
   toggleParticipantMic(participantId: string) {
-    this.primarySession.conf?.manager
+    this.primaryConnection.conf?.manager
       .moderateMemberById(participantId)
       .toToggleMicrophone();
   }
 
   askToStartParticipantCam(to: string) {
-    if (this.primarySession.call && this.primarySession.conf) {
-      this.primarySession.conf.manager.broadcastChatMessage(
+    if (this.primaryConnection.call && this.primaryConnection.conf) {
+      this.primaryConnection.conf.manager.broadcastChatMessage(
         new OutgoingMessage({
           method: ChatMethod.AskToStartCam,
-          from: this.primarySession.call.getId(),
+          from: this.primaryConnection.call.getId(),
           to
         })
       );
@@ -234,29 +315,39 @@ export default class VertoSession {
   }
 
   stopParticipantCam(participantId: string) {
-    this.primarySession.conf?.manager
+    this.primaryConnection.conf?.manager
       .moderateMemberById(participantId)
       .toToggleCamera();
   }
 
   removeParticipant(participantId: string) {
-    this.primarySession.conf?.manager
+    this.primaryConnection.conf?.manager
       .moderateMemberById(participantId)
       .toBeKickedOut();
   }
 
-  showParticipantName(participantId: string, name: string) {
-    this.primarySession.conf?.manager
-      .moderateMemberById(participantId)
-      .toHaveVideoBannerAs(name);
+  togglePrimaryMic() {
+    this.primaryConnection.call?.sendTouchTone('0');
+  }
+
+  togglePrimaryCam() {
+    this.primaryConnection.call?.sendTouchTone('*0');
+  }
+
+  toggleSecondaryMic() {
+    this.secondaryConnection.call?.sendTouchTone('0');
+  }
+
+  toggleSecondaryCam() {
+    this.secondaryConnection.call?.sendTouchTone('*0');
   }
 
   sendMessageMyMicToggled(value: boolean) {
-    if (this.primarySession.call && this.primarySession.conf) {
-      this.primarySession.conf.manager.broadcastChatMessage(
+    if (this.primaryConnection.call && this.primaryConnection.conf) {
+      this.primaryConnection.conf.manager.broadcastChatMessage(
         new OutgoingMessage({
           method: ChatMethod.ToggleMyMic,
-          from: this.primarySession.call.getId(),
+          from: this.primaryConnection.call.getId(),
           to: OutgoingMessageTo.Everyone,
           message: value.toString()
         })
@@ -264,64 +355,50 @@ export default class VertoSession {
     }
   }
 
-  togglePrimaryMic() {
-    this.primarySession.call?.sendTouchTone('0');
-  }
-
-  togglePrimaryCam() {
-    this.primarySession.call?.sendTouchTone('*0');
-  }
-
-  toggleSecondaryMic() {
-    this.secondarySession.call?.sendTouchTone('0');
-  }
-
-  toggleSecondaryCam() {
-    this.secondarySession.call?.sendTouchTone('*0');
-  }
-
   sendMessageToEveryone(message: string) {
-    if (this.primarySession.call && this.primarySession.conf) {
-      this.primarySession.conf.manager.broadcastChatMessage(
+    if (this.primaryConnection.call && this.primaryConnection.conf) {
+      this.primaryConnection.conf.manager.broadcastChatMessage(
         new OutgoingMessage({
           method: ChatMethod.ToEveryone,
-          from: this.callerDisplayName,
+          from: this.caller,
           to: OutgoingMessageTo.Everyone,
           message,
-          fromDisplay: this.callerDisplayName
+          fromDisplay: this.caller
         })
       );
     }
   }
 
   sendMessageOneToOne(message: string, to: string) {
-    if (this.primarySession.call && this.primarySession.conf) {
-      this.primarySession.conf.manager.broadcastChatMessage({
-        method: ChatMethod.OneToOne,
-        from: this.primarySession.call.getId(),
-        to,
-        message,
-        fromDisplay: this.callerDisplayName
-      });
+    if (this.primaryConnection.call && this.primaryConnection.conf) {
+      this.primaryConnection.conf.manager.broadcastChatMessage(
+        new OutgoingMessage({
+          method: ChatMethod.OneToOne,
+          from: this.primaryConnection.call.getId(),
+          to,
+          message,
+          fromDisplay: this.caller
+        })
+      );
     }
   }
 
   sendMessageSwitchHostStream(to: string, username: string, password: string) {
-    if (this.primarySession.call && this.primarySession.conf) {
-      this.primarySession.conf.manager.broadcastChatMessage(
+    if (this.primaryConnection.call && this.primaryConnection.conf) {
+      this.primaryConnection.conf.manager.broadcastChatMessage(
         new OutgoingMessage({
           method: ChatMethod.SwitchHostStream,
-          from: this.primarySession.call.getId(),
+          from: this.primaryConnection.call.getId(),
           to,
           message: JSON.stringify({username, password})
         })
       );
 
       // For old versions
-      this.primarySession.conf.manager.broadcastChatMessage(
+      this.primaryConnection.conf.manager.broadcastChatMessage(
         new OutgoingMessage({
           method: ChatMethod.SwitchHost,
-          from: this.primarySession.call.getId(),
+          from: this.primaryConnection.call.getId(),
           to,
           message: JSON.stringify({username, password})
         })
@@ -330,37 +407,23 @@ export default class VertoSession {
   }
 
   sendMessageSwitchHostCamera(to: string) {
-    if (this.primarySession.call && this.primarySession.conf) {
-      this.primarySession.conf.manager.broadcastChatMessage(
+    if (this.primaryConnection.call && this.primaryConnection.conf) {
+      this.primaryConnection.conf.manager.broadcastChatMessage(
         new OutgoingMessage({
           method: ChatMethod.SwitchHostCamera,
-          from: this.primarySession.call.getId(),
-          to,
-          message: JSON.stringify({moderator: this.primarySession.conf.manager.moderator})
-        })
-      );
-    }
-  }
-
-  sendMessageChangeParticipantState(participantId: string, isActive: boolean) {
-    if (this.primarySession.call && this.primarySession.conf) {
-      this.primarySession.conf.manager.broadcastChatMessage(
-        new OutgoingMessage({
-          method: ChatMethod.ChangeParticipantState,
-          from: this.primarySession.call.getId(),
-          to: OutgoingMessageTo.Everyone,
-          message: JSON.stringify({participantId, isActive})
+          from: this.primaryConnection.call.getId(),
+          to
         })
       );
     }
   }
 
   sendMessageStreamChange(streamUrl: string, streamName: string) {
-    if (this.primarySession.call && this.primarySession.conf) {
-      this.primarySession.conf.manager.broadcastChatMessage(
+    if (this.primaryConnection.call && this.primaryConnection.conf) {
+      this.primaryConnection.conf.manager.broadcastChatMessage(
         new OutgoingMessage({
           method: ChatMethod.StreamChange,
-          from: this.primarySession.call.getId(),
+          from: this.primaryConnection.call.getId(),
           to: OutgoingMessageTo.Everyone,
           message: JSON.stringify({streamUrl, streamName})
         })
@@ -368,63 +431,162 @@ export default class VertoSession {
     }
   }
 
+  sendMessageMakeCoHost(to: string) {
+    if (this.primaryConnection.call && this.primaryConnection.conf && this.modToken) {
+      this.primaryConnection.conf.manager.broadcastChatMessage(
+        new OutgoingMessage({
+          method: ChatMethod.MakeCoHost,
+          from: this.primaryConnection.call.getId(),
+          to,
+          message: JSON.stringify({token: this.modToken})
+        })
+      );
+    }
+  }
+
+  sendMessageRemoveCoHost(to: string, coHostCallIds: string[]) {
+    if (this.primaryConnection.call && this.primaryConnection.conf) {
+      this.primaryConnection.conf.manager.broadcastChatMessage(
+        new OutgoingMessage({
+          method: ChatMethod.RemoveCoHost,
+          from: this.primaryConnection.call.getId(),
+          to,
+          message: JSON.stringify({coHostCallIds})
+        })
+      );
+    }
+  }
+
+  sendMessageYouHaveBeenRemoved(to: string) {
+    if (this.primaryConnection.call && this.primaryConnection.conf) {
+      this.primaryConnection.conf.manager.broadcastChatMessage(
+        new OutgoingMessage({
+          method: ChatMethod.RemoveParticipant,
+          from: this.primaryConnection.call.getId(),
+          to
+        })
+      );
+    }
+  }
+
+  sendMessageYouHaveBeenBlocked(to: string) {
+    if (this.primaryConnection.call && this.primaryConnection.conf) {
+      this.primaryConnection.conf.manager.broadcastChatMessage(
+        new OutgoingMessage({
+          method: ChatMethod.BlockParticipant,
+          from: this.primaryConnection.call.getId(),
+          to
+        })
+      );
+    }
+  }
+
+  sendMessageStopMediaShare(to: string) {
+    if (this.primaryConnection.call && this.primaryConnection.conf) {
+      this.primaryConnection.conf.manager.broadcastChatMessage(
+        new OutgoingMessage({
+          method: ChatMethod.StopMediaShare,
+          from: this.primaryConnection.call.getId(),
+          to
+        })
+      );
+    }
+  }
+
   sendMessageHostLeft() {
-    if (this.primarySession.call && this.primarySession.conf) {
-      this.primarySession.conf.manager.broadcastChatMessage(
+    if (this.primaryConnection.call && this.primaryConnection.conf) {
+      this.primaryConnection.conf.manager.broadcastChatMessage(
         new OutgoingMessage({
           method: ChatMethod.HostLeft,
-          from: this.primarySession.call.getId(),
+          from: this.primaryConnection.call.getId(),
           to: OutgoingMessageTo.Everyone
         })
       );
     }
   }
 
-  replacePrimaryTracks(stream: MediaStream) {
-    this.primarySession.call?.replaceTracks(stream);
-  }
-
-  stopPrimaryVideoTrack() {
-    this.primarySession.call?.stopPrimaryVideoTrack();
-  }
-
-  replaceSecondaryTracks(stream: MediaStream) {
-    this.secondarySession.call?.replaceTracks(stream);
-  }
-
-  replaceTracks(stream: MediaStream) {
-    if (this.secondarySession.call) {
-      this.secondarySession.call.replaceTracks(stream);
-    } else if (this.primarySession.call) {
-      this.primarySession.call.replaceTracks(stream);
+  sendMessageStopAllMediaShare() {
+    if (this.primaryConnection.call && this.primaryConnection.conf) {
+      this.primaryConnection.conf.manager.broadcastChatMessage(
+        new OutgoingMessage({
+          method: ChatMethod.StopAllMediaShare,
+          from: this.primaryConnection.call.getId(),
+          to: OutgoingMessageTo.Everyone
+        })
+      );
     }
   }
 
+  sendMessageYouAreHost(callId: string) {
+    if (this.primaryConnection.call && this.primaryConnection.conf) {
+      this.primaryConnection.conf.manager.broadcastChatMessage(
+        new OutgoingMessage({
+          method: ChatMethod.YouAreHost,
+          from: this.primaryConnection.call.getId(),
+          to: callId
+        })
+      );
+    }
+  }
+
+  setModeratorToken(token: string) {
+    this.primaryConnection.conf?.manager.setModeratorChannel(token);
+  }
+
+  removeModeratorToken() {
+    this.primaryConnection.conf?.manager.removeModeratorChannel();
+  }
+
+  replacePrimaryTracks(stream: MediaStream) {
+    this.primaryConnection.call?.replaceTracks(stream);
+  }
+
+  replaceSecondaryTracks(stream: MediaStream) {
+    this.secondaryConnection.call?.replaceTracks(stream);
+  }
+
+  replaceTracks(stream: MediaStream) {
+    if (this.secondaryConnection.call) {
+      this.secondaryConnection.call.replaceTracks(stream);
+    } else if (this.primaryConnection.call) {
+      this.primaryConnection.call.replaceTracks(stream);
+    }
+  }
+
+  replacePrimaryVideoSecondaryAudioTrack(
+    audio: MediaStreamTrack,
+    video: MediaStreamTrack
+  ) {
+    if (!this.primaryConnection.call || !this.secondaryConnection.call) {
+      console.error('No primary or secondary call');
+      return;
+    }
+
+    this.primaryConnection.call.replaceTracks(new MediaStream([video]));
+    this.secondaryConnection.call.replaceTracks(new MediaStream([audio]));
+  }
+
   increaseVolume(participantId: string) {
-    if (this.primarySession.conf) {
-      this.primarySession.conf.manager
+    if (this.primaryConnection.conf) {
+      this.primaryConnection.conf.manager
         .moderateMemberById(participantId)
         .toIncreaseVolumeInput();
     }
   }
 
   decreaseVolume(participantId: string) {
-    if (this.primarySession.conf) {
-      this.primarySession.conf.manager
+    if (this.primaryConnection.conf) {
+      this.primaryConnection.conf.manager
         .moderateMemberById(participantId)
         .toDecreaseVolumeInput();
     }
   }
 
-  get imSharingVideo() {
-    return this.isSharingVideo;
-  };
-
-  private onWsMessage(wsMessage: string) {
+  private onWsMessage(event: MessageEvent) {
     try {
-      const message = JSON.parse(wsMessage) || {};
+      const message = JSON.parse(event.data) || {};
 
-      // console.log(wsMessage);
+      // console.log(event.data);
 
       const {jsonrpc, id, result} = message;
 
@@ -441,17 +603,25 @@ export default class VertoSession {
   }
 
   private destroy() {
+    // this.secondary.call?.setState(ENUM.state.purge);
+    // this.primary.call?.setState(ENUM.state.purge);
     this.vertoSubscription.clear();
-    this.vertoWebSocket.disconnect();
+    // this.vertoNotification.onDestroy.notify(null);
+    this.disconnectWebSocket();
   }
 
   private checkIfCallExists(callID: string) {
-    if (this.primarySession.call?.params.callID === callID) {
-      return this.primarySession.call;
+    if (this.primaryConnection.call?.params.callID === callID) {
+      return this.primaryConnection.call;
     }
 
-    if (this.secondarySession.call?.params.callID === callID) {
-      return this.secondarySession.call;
+    if (this.secondaryConnection.call?.params.callID === callID) {
+      return this.secondaryConnection.call;
+    }
+
+    const connection = this.connections.find(c => c.call.params.callID === callID);
+    if (connection) {
+      return connection.call;
     }
 
     return false;
@@ -461,8 +631,8 @@ export default class VertoSession {
     const {params: event} = data;
 
     if (
-      !this.primarySession.call ||
-      event.pvtData.callID !== this.primarySession.call.getId()
+      !this.primaryConnection.call ||
+      event.pvtData.callID !== this.primaryConnection.call.getId()
     ) {
       return;
     }
@@ -480,13 +650,14 @@ export default class VertoSession {
           callID
         } = event.pvtData;
 
+        this.modToken = modChannel;
+
         const confManagerCb = {
           chat: chatChannel,
           info: infoChannel,
           mod: modChannel
         };
-
-        this.primarySession.conf = {
+        this.primaryConnection.conf = {
           creationEvent: event,
           privateEventChannel: event.eventChannel,
           memberId: conferenceMemberID,
@@ -495,7 +666,7 @@ export default class VertoSession {
             this.vertoSubscription,
             this.vertoNotification,
             confManagerCb,
-            this.primarySession.call.getId()
+            this.primaryConnection.call.getId()
           ),
           liveArray: new ConferenceLiveArray(
             this.vertoSubscription,
@@ -505,6 +676,7 @@ export default class VertoSession {
             callID
           )
         };
+        this.primaryConnection.conf.liveArray.setSecondaryCallId(this.secondaryConnection.id);
         break;
       case 'conference-liveArray-part':
         this.destroy();
@@ -575,7 +747,7 @@ export default class VertoSession {
         ) {
           this.vertoNotification.onPrivateEvent.notify(params);
         } else if (!subscription) {
-          console.warn(
+          console.log(
             'Ignoring event for unsubscribed channel',
             channel,
             params

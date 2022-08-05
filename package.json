@@ -2,7 +2,7 @@
   "name": "verto",
   "version": "1.0.0",
   "description": "",
-  "main": "VertoSession.ts",
+  "main": "src/VertoSession.ts",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -16,7 +16,7 @@
     "url": "https://github.com/12alltv/verto/issues"
   },
   "homepage": "https://github.com/12alltv/verto#readme",
-  "dependencies": {
+  "devDependencies": {
     "typescript": "^4.7.4"
   }
 }

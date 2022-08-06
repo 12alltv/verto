@@ -1,16 +1,19 @@
 import FSRTCPeerConnection from './FSRTCPeerConnection';
 import VertoNotification from '../VertoNotification';
+import {IceServer} from "../types";
 
 type VertoRTCOptions = {
+  iceServers: IceServer[];
   notifyOnStateChange: boolean;
   localStream: MediaStream;
   callbacks: {
-    onICESDP: () => void;
+    onIceSdp: () => void;
     onPeerStreamingError: (err: any) => void;
   };
   notification: VertoNotification;
   receiveStream: boolean;
-  onStateChange: () => void;
+  onStateChange?: () => void;
+  onReceiveStream?: (stream: MediaStream) => void;
 };
 
 export default class VertoRTC {
@@ -69,7 +72,7 @@ export default class VertoRTC {
   inviteRemotePeerConnection() {
     this.type = 'offer';
 
-    const {callbacks: {onPeerStreamingError}, localStream, notifyOnStateChange, receiveStream} = this.options;
+    const {callbacks: {onPeerStreamingError}, localStream, notifyOnStateChange, receiveStream, iceServers} = this.options;
     const constraints: RTCOfferOptions = {
       offerToReceiveVideo: receiveStream,
       offerToReceiveAudio: receiveStream
@@ -77,15 +80,17 @@ export default class VertoRTC {
 
     const handleStream = (stream: MediaStream) => {
       this.peer = new FSRTCPeerConnection({
+        iceServers,
         stream,
         constraints,
         onPeerStreamingError,
         onIceSdp: ({sdp}: RTCSessionDescription) => {
           this.mediaData.SDP = sdp;
-          this.options.callbacks.onICESDP();
+          this.options.callbacks.onIceSdp();
         },
         onRemoteStream: (stream: MediaStream) => {
           this.options.notification.onPlayRemoteVideo.notify(stream);
+          this.options.onReceiveStream && this.options.onReceiveStream(stream);
         },
         onOfferSdp: ({sdp}: RTCSessionDescriptionInit) => {
           if (sdp) {
@@ -96,7 +101,7 @@ export default class VertoRTC {
         },
         onStateChange: () => {
           notifyOnStateChange && this.options.notification.onSharedStateChange.notify(null);
-          this.options.onStateChange();
+          this.options.onStateChange && this.options.onStateChange();
         }
       });
     };

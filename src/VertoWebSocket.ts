@@ -56,13 +56,13 @@ export default class VertoWebSocket {
         },
         onSuccess: () => {
           if (!reconnecting) {
-            this.notifications.onFSLogged.notify(null);
+            this.notifications.onFreeswitchLogin.notify(null);
           } else {
-            this.notifications.onFSReconnectingLogged.notify(null);
+            this.notifications.onFreeswitchReconnectLogin.notify(null);
           }
         },
         onError: (err) => {
-          this.notifications.onFSLoggedError.notify(null);
+          this.notifications.onFreeswitchLoginError.notify(null);
           console.error('Error while publishing', err);
         }
       });

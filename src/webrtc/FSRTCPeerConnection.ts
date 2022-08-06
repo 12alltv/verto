@@ -1,7 +1,7 @@
 import {IceServer} from '../types';
-import {RestService} from '../services';
 
 type Options = {
+  iceServers: IceServer[];
   stream: MediaStream;
   constraints: RTCOfferOptions;
   onPeerStreamingError: (error: any) => void;
@@ -10,8 +10,6 @@ type Options = {
   onIceSdp: (sessionDescription: RTCSessionDescription) => void;
   onOfferSdp: (sessionDescription: RTCSessionDescriptionInit) => void;
 }
-
-let iceServers: IceServer[];
 
 export default class FSRTCPeerConnection {
   private readonly options: Options;
@@ -24,6 +22,7 @@ export default class FSRTCPeerConnection {
 
   private async init() {
     const {
+      iceServers,
       stream,
       constraints,
       onIceSdp,
@@ -32,14 +31,6 @@ export default class FSRTCPeerConnection {
       onPeerStreamingError,
       onOfferSdp
     } = this.options;
-
-    if (!iceServers) {
-      try {
-        const {data} = await RestService.getIceServers();
-        iceServers = data;
-      } catch (e) {
-      }
-    }
 
     this.pc = new RTCPeerConnection({iceServers});
 

@@ -16,6 +16,8 @@ export type Session = {
 };
 
 export type VertoSessionParams = {
+  defaultLayout: VertoLayout;
+  iceServers: IceServer[];
   callerName: string;
   apiUrl: string;
   platforms: Platform[];
@@ -30,8 +32,8 @@ export type VertoSessionParams = {
   displayName?: string;
   channelName?: string;
   moderatorUsername?: string;
-  moderatorPassword?: string;
-  fsUrl?: string;
+  moderatorPassword: string;
+  fsUrl: string;
   isHost?: boolean;
   isHostSharedVideo?: boolean;
   notifyOnStateChange?: boolean;
@@ -40,6 +42,8 @@ export type VertoSessionParams = {
 };
 
 export type VertoCallParams = {
+  isIos: boolean;
+  iceServers: IceServer[];
   callID: string;
   caller_id_name: string;
   destination_number: string;

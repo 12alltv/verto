@@ -12,8 +12,6 @@ import VertoWebSocket from './VertoWebSocket';
 import {ChatMethod} from './enums';
 import {OutgoingMessage, OutgoingMessageTo} from './models/OutgoingMessage';
 import Participant from './models/Participant';
-import {RestService} from './services';
-import BaseService from "./services/BaseService";
 
 type SocketMessage = { method: any; params: any };
 type RPCMessage = {
@@ -60,11 +58,9 @@ export default class VertoSession {
   private vertoSubscription = new VertoSubscription(this.vertoNotification);
   private vertoWebSocket: VertoWebSocket;
   private modToken: string | null = null;
-  private defaultLayout: VertoLayout | null = null;
   private caller = '';
 
   constructor(params: VertoSessionParams) {
-    BaseService.apiUrl = params.apiUrl;
     this.sessionParams = params;
     const loginUrl = params.fsUrl.replace('wss://', '').replace('/', '');
     this.vertoWebSocket = new VertoWebSocket(
@@ -75,7 +71,7 @@ export default class VertoSession {
       this.sessionParams.fsUrl,
       params.platforms
     );
-    this.vertoNotification.onFSLogged.subscribe(() => {
+    this.vertoNotification.onFreeswitchLogin.subscribe(() => {
       if (params.secondary && params.channelName) {
         this.secondaryCall({
           stream: params.localStream,
@@ -131,10 +127,6 @@ export default class VertoSession {
     this.vertoWebSocket.disconnect();
   }
 
-  reconnectWebSocket() {
-    this.vertoWebSocket.reconnect();
-  }
-
   giveParticipantFloor(participantId: string) {
     if (this.primaryConnection.conf) {
       this.primaryConnection.conf.manager
@@ -143,21 +135,8 @@ export default class VertoSession {
     }
   }
 
-  changeLayout(layout?: VertoLayout) {
-    if (layout) {
-      this.primaryConnection.conf?.manager.changeVideoLayout(layout);
-    } else {
-      const getDefaultLayout = async () => {
-        if (!this.defaultLayout) {
-          const {data} = await RestService.getDefaultLayout();
-          this.defaultLayout = data.layout;
-        }
-
-        this.primaryConnection.conf?.manager.changeVideoLayout(this.defaultLayout);
-      };
-
-      getDefaultLayout().catch();
-    }
+  changeLayout(layout: VertoLayout = this.sessionParams.defaultLayout) {
+    this.primaryConnection.conf?.manager.changeVideoLayout(layout);
   }
 
   primaryCall() {
@@ -173,7 +152,8 @@ export default class VertoSession {
       notifyOnStateChange,
       receivePrimaryCallStream,
       userId,
-      isIos
+      isIos,
+      iceServers
     } = this.sessionParams;
 
     this.caller = callerName || `User_${new Date().getUTCMilliseconds()}`;
@@ -194,6 +174,7 @@ export default class VertoSession {
       isPrimaryCall: true,
       userId,
       isIos,
+      iceServers,
       onDestroy: () => this.notification.onPrimaryCallDestroy.notify(null),
       onRTCStateChange: () => this.notification.onPrimaryCallRTCStateChange.notify(null),
       onReceiveStream: (stream) => this.notification.onPrimaryCallReceiveStream.notify(stream)
@@ -201,7 +182,7 @@ export default class VertoSession {
   }
 
   secondaryCall({stream, channelName, receiveStream}: SecondaryCallParams) {
-    const {streamNumber, userId, isIos} = this.sessionParams;
+    const {streamNumber, userId, isIos, iceServers} = this.sessionParams;
     this.secondaryConnection.call = new Call({
       callID: this.secondaryConnection.id,
       destination_number: streamNumber as string,
@@ -216,6 +197,7 @@ export default class VertoSession {
       isHost: false,
       userId,
       isIos,
+      iceServers,
       onDestroy: () => this.notification.onSecondaryCallDestroy.notify(null),
       onRTCStateChange: () => this.notification.onSecondaryCallRTCStateChange.notify(null),
       onReceiveStream: (stream) => this.notification.onSecondaryCallReceiveStream.notify(stream)
@@ -223,7 +205,7 @@ export default class VertoSession {
   }
 
   secondaryCallStream(stream: MediaStream, streamName: string = 'Broadcast', mediaShare: boolean = false) {
-    const {streamNumber, userId} = this.sessionParams;
+    const {streamNumber, userId, isIos, iceServers} = this.sessionParams;
     this.secondaryConnection.call = new Call({
       callID: this.secondaryConnection.id,
       destination_number: streamNumber as string,
@@ -237,6 +219,8 @@ export default class VertoSession {
       isHost: true,
       isHostSharedVideo: true,
       userId,
+      isIos,
+      iceServers,
       onDestroy: () => this.notification.onSecondaryCallDestroy.notify(null),
       onRTCStateChange: () => this.notification.onSecondaryCallRTCStateChange.notify(null),
       onReceiveStream: (stream) => this.notification.onSecondaryCallReceiveStream.notify(stream)
@@ -256,7 +240,9 @@ export default class VertoSession {
         notification: this.vertoNotification,
         showMe: true,
         displayName: caller,
-        receiveStream: false
+        receiveStream: false,
+        isIos: this.sessionParams.isIos,
+        iceServers: this.sessionParams.iceServers
       })
     });
   }
@@ -582,9 +568,9 @@ export default class VertoSession {
     }
   }
 
-  private onWsMessage(event: MessageEvent) {
+  private onWsMessage(wsMessage: string) {
     try {
-      const message = JSON.parse(event.data) || {};
+      const message = JSON.parse(wsMessage) || {};
 
       // console.log(event.data);
 

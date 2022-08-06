@@ -35,7 +35,8 @@ export default class Call {
       channelName,
       displayName,
       isPrimaryCall,
-      userId
+      userId,
+      isIos
     } = params;
 
     this.params = {
@@ -50,7 +51,8 @@ export default class Call {
         channelName,
         displayName,
         isPrimaryCall: isPrimaryCall || false,
-        userId: `${userId}`
+        userId: `${userId}`,
+        isIos
       },
       ...params
     };
@@ -129,9 +131,10 @@ export default class Call {
       },
     };
 
-    const {localStream, notification, receiveStream, notifyOnStateChange, onRTCStateChange, onReceiveStream} = this.params;
+    const {iceServers, localStream, notification, receiveStream, notifyOnStateChange, onRTCStateChange, onReceiveStream} = this.params;
 
     this.rtc = new VertoRTC({
+      iceServers,
       callbacks,
       localStream,
       notifyOnStateChange,

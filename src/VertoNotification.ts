@@ -65,9 +65,9 @@ export default class VertoNotification {
   readonly onReplaceTracksDone = new Notification<null>();
   readonly sendWsRequest = new Notification<SendWsRequest>();
   readonly onNewSession = new Notification<{ request: WsRequest, onSuccess: (data: any) => void, onError: (err?: any) => void }>();
-  readonly onFSLogged = new Notification<null>();
-  readonly onFSReconnectingLogged = new Notification<null>();
-  readonly onFSLoggedError = new Notification<null>();
+  readonly onFreeswitchLogin = new Notification<null>();
+  readonly onFreeswitchReconnectLogin = new Notification<null>();
+  readonly onFreeswitchLoginError = new Notification<null>();
   readonly onWebSocketMessage = new Notification<string>();
   readonly onReplaceUserTracks = new Notification<MediaStream>();
   readonly onReplaceMediaTracks = new Notification<MediaStream>();
@@ -83,6 +83,12 @@ export default class VertoNotification {
   readonly onStopAllMediaShare = new Notification<null>();
   readonly onYouHaveBeenBlocked = new Notification<null>();
   readonly onYouAreHost = new Notification<null>();
+
+  readonly onShareHangup = new Notification<null>();
+  readonly onPlayRemoteShareVideo = new Notification<MediaStream>();
+  readonly onSharedStateChange = new Notification<null>();
+  readonly failToConnectToWs = new Notification<null>();
+  readonly onWebSocketReconnecting = new Notification<null>();
 
   removeAllSubscribers() {
     for (const property in this) {
